@@ -95,10 +95,14 @@ export function createMarkdown(): Markdown {
         .filter(t => t.type === "text" || t.type === "code_inline")
         .map(t => t.content)
         .join("");
-      let id = String(token.attrGet("id") ?? slugify(text));
-      const count = env.usedIds.get(id) ?? 0;
-      env.usedIds.set(id, count + 1);
-      if (count > 0) id = `${id}-${count}`;
+      const base = String(token.attrGet("id") ?? slugify(text));
+      // "intro", then "intro-1", "intro-2", …, skipping ids already taken
+      // (e.g. by a literal "Intro 1" heading). usedIds: id -> last suffix used.
+      let n = env.usedIds.get(base) ?? 0;
+      let id = base;
+      while (env.usedIds.has(id)) id = `${base}-${++n}`;
+      if (id !== base) env.usedIds.set(base, n);
+      env.usedIds.set(id, env.usedIds.get(id) ?? 0);
       token.attrSet("id", id);
       env.headings.push({ level: Number(token.tag.slice(1)), id, text });
     }
@@ -118,7 +122,8 @@ export function createMarkdown(): Markdown {
     const attr = token.attrGet("href");
     const href = attr == null ? null : String(attr);
     if (href && !/^[a-z][a-z0-9+.-]*:/i.test(href) && !href.startsWith("//")) {
-      token.attrSet("href", href.replace(/\.md(#|$)/, ".html$1"));
+      // Only the path part: "a.md#x" / "a.md?y" -> "a.html…", but not "#notes.md".
+      token.attrSet("href", href.replace(/^([^#?]*)\.md(?=[#?]|$)/, "$1.html"));
     }
     return defaultLinkOpen(tokens, idx, options, env, self);
   };

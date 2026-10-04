@@ -72,7 +72,7 @@ export function renderLayout(input: LayoutInput): string {
       : `<span></span>`;
 
   return `<!doctype html>
-<html lang="${escapeHtml(config.language)}" data-root="${root}" data-features="${features}">
+<html lang="${escapeHtml(config.language)}" data-root="${escapeHtml(root)}" data-features="${features}"${page ? ` data-page="${escapeHtml(page.url)}"` : ""}>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -92,9 +92,9 @@ ${css.map(href => `<link rel="stylesheet" href="${href}">`).join("\n")}
     <div class="menu-left">
       <button type="button" id="sidebar-toggle" class="icon-button" aria-label="Toggle table of contents" aria-controls="sidebar">${icon.menu}</button>
       <div class="theme-picker">
-        <button type="button" id="theme-toggle" class="icon-button" aria-label="Change theme" aria-haspopup="true" aria-expanded="false">${icon.theme}</button>
-        <ul id="theme-list" role="menu" hidden>
-          ${["system", "light", "dark", "sepia"].map(t => `<li role="none"><button type="button" role="menuitem" data-theme="${t}">${t[0]!.toUpperCase() + t.slice(1)}</button></li>`).join("")}
+        <button type="button" id="theme-toggle" class="icon-button" aria-label="Change theme" aria-controls="theme-list" aria-expanded="false">${icon.theme}</button>
+        <ul id="theme-list" aria-label="Theme" hidden>
+          ${["system", "light", "dark", "sepia"].map(t => `<li><button type="button" data-theme="${t}" aria-pressed="false">${t[0]!.toUpperCase() + t.slice(1)}</button></li>`).join("")}
         </ul>
       </div>
       ${f.search ? `<button type="button" id="search-toggle" class="icon-button" aria-label="Search (press /)">${icon.search}</button>` : ""}
@@ -106,7 +106,7 @@ ${css.map(href => `<link rel="stylesheet" href="${href}">`).join("\n")}
   </header>
   ${
     f.search
-      ? `<div id="search" role="dialog" aria-label="Search" hidden>
+      ? `<div id="search" role="dialog" aria-modal="true" aria-label="Search" hidden>
     <div class="search-box">
       <input type="search" id="search-input" placeholder="Search this book…" autocomplete="off" aria-label="Search this book">
       <p class="search-status" aria-live="polite"></p>

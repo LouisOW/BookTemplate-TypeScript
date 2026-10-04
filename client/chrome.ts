@@ -66,33 +66,55 @@ function applyTheme(choice: string) {
 function initThemePicker() {
   const button = document.getElementById("theme-toggle");
   const list = document.getElementById("theme-list");
-  if (!button || !list) return;
+  const picker = button?.closest<HTMLElement>(".theme-picker");
+  if (!button || !list || !picker) return;
 
-  const close = () => {
+  const syncPressed = () => {
+    const current = read("book-theme") ?? "system";
+    for (const b of list.querySelectorAll<HTMLElement>("[data-theme]")) b.setAttribute("aria-pressed", String(b.dataset.theme === current));
+  };
+  const close = (refocus = false) => {
+    if (list.hidden) return;
     list.hidden = true;
     button.setAttribute("aria-expanded", "false");
+    if (refocus) button.focus();
   };
-  button.addEventListener("click", e => {
-    e.stopPropagation();
+  button.addEventListener("click", () => {
     list.hidden = !list.hidden;
     button.setAttribute("aria-expanded", String(!list.hidden));
-    if (!list.hidden) list.querySelector<HTMLButtonElement>(`[data-theme="${read("book-theme") ?? "system"}"]`)?.focus();
+    if (!list.hidden) {
+      syncPressed();
+      list.querySelector<HTMLButtonElement>('[aria-pressed="true"]')?.focus();
+    }
   });
   list.addEventListener("click", e => {
     const choice = (e.target as HTMLElement).closest<HTMLElement>("[data-theme]")?.dataset.theme;
     if (!choice) return;
     store("book-theme", choice);
     applyTheme(choice);
-    close();
-    button.focus();
+    syncPressed();
+    close(true);
   });
-  list.addEventListener("keydown", e => {
+  // Arrow keys move between options; Escape closes from the list or the button.
+  picker.addEventListener("keydown", e => {
+    if (list.hidden) return;
     if (e.key === "Escape") {
-      close();
-      button.focus();
+      e.stopPropagation();
+      close(true);
+    } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const options = [...list.querySelectorAll<HTMLButtonElement>("button")];
+      const i = options.indexOf(document.activeElement as HTMLButtonElement);
+      options[(i + (e.key === "ArrowDown" ? 1 : -1) + options.length) % options.length]?.focus();
     }
   });
-  document.addEventListener("click", close);
+  // Close when focus or a click goes elsewhere.
+  picker.addEventListener("focusout", e => {
+    if (!picker.contains(e.relatedTarget as Node | null)) close();
+  });
+  document.addEventListener("click", e => {
+    if (!picker.contains(e.target as Node)) close();
+  });
 
   matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
     if ((read("book-theme") ?? "system") === "system") applyTheme("system");
@@ -128,6 +150,48 @@ export function codeButtons(pre: HTMLElement): HTMLElement {
   return row;
 }
 
+/** Clipboard API where available (HTTPS/localhost), else the legacy execCommand fallback. */
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.append(area);
+    area.select();
+    const ok = document.execCommand("copy");
+    area.remove();
+    return ok;
+  }
+}
+
+/**
+ * Keeps Tab / Shift+Tab inside `container` (for modal dialogs). Call from a
+ * keydown listener; returns true if it handled the key.
+ */
+export function trapFocus(container: HTMLElement, e: KeyboardEvent): boolean {
+  if (e.key !== "Tab") return false;
+  const focusable = [
+    ...container.querySelectorAll<HTMLElement>("a[href], button:not([disabled]), input:not([disabled]), textarea, select, [tabindex]:not([tabindex='-1'])"),
+  ].filter(el => el.offsetParent !== null || el === document.activeElement);
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (!first || !last) return false;
+  const active = document.activeElement;
+  if (e.shiftKey && (active === first || !container.contains(active))) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && (active === last || !container.contains(active))) {
+    e.preventDefault();
+    first.focus();
+  }
+  return true;
+}
+
 function initCopyButtons() {
   for (const pre of document.querySelectorAll<HTMLElement>("pre.code-block")) {
     const button = document.createElement("button");
@@ -135,15 +199,11 @@ function initCopyButtons() {
     button.className = "code-button";
     button.textContent = "Copy";
     button.setAttribute("aria-label", "Copy code to clipboard");
-    button.addEventListener("click", async () => {
-      const code = pre.querySelector("code")?.innerText ?? "";
-      try {
-        await navigator.clipboard.writeText(code);
-        button.textContent = "Copied!";
-      } catch {
-        button.textContent = "Copy failed";
-      }
-      setTimeout(() => (button.textContent = "Copy"), 1500);
+    button.addEventListener("click", () => {
+      void copyText(pre.querySelector("code")?.innerText ?? "").then(ok => {
+        button.textContent = ok ? "Copied!" : "Copy failed";
+        setTimeout(() => (button.textContent = "Copy"), 1500);
+      });
     });
     codeButtons(pre).append(button);
   }

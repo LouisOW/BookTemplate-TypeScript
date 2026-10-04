@@ -25,6 +25,11 @@ export interface BookConfig {
   src?: string;
   /** Output directory. Default `book`. */
   out?: string;
+  /**
+   * URL path the book is served from, e.g. "/my-book/" for a GitHub project
+   * site. Only used by 404.html, which can be shown at any URL. Default "/".
+   */
+  basePath?: string;
   features?: Partial<Features>;
   quiz?: {
     /** Open quizzes as a full-screen overlay. Default true. */
@@ -85,13 +90,24 @@ export interface Plugin {
 
 /** Thrown for problems in the book's content. Reported without a stack trace. */
 export class BookError extends Error {
-  constructor(message: string, readonly file?: string) {
-    super(file ? `${file}: ${message}` : message);
+  override readonly name = "BookError";
+  readonly file: string | undefined;
+  constructor(message: string, file?: string, options?: ErrorOptions) {
+    super(file ? `${file}: ${message}` : message, options);
+    this.file = file;
   }
 }
 
+/** Message of anything thrown (not everything thrown is an Error). */
+export const errorMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+/** Identity helpers that give you type checking and autocompletion in book.config.ts. */
 export function defineConfig(config: BookConfig): BookConfig {
   return config;
+}
+
+export function definePlugin(plugin: Plugin): Plugin {
+  return plugin;
 }
 
 export function resolveConfig(config: BookConfig, root: string): ResolvedConfig {
@@ -103,6 +119,7 @@ export function resolveConfig(config: BookConfig, root: string): ResolvedConfig 
     repositoryUrl: config.repositoryUrl,
     src: config.src ?? "src",
     out: config.out ?? "book",
+    basePath: (config.basePath ?? "/").replace(/\/?$/, "/"),
     features: {
       quizzes: true,
       highlights: true,

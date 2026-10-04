@@ -125,8 +125,15 @@ html.quiz-open body {
   transition: margin-left 0.2s ease;
 }
 
+/* visibility (delayed until the slide finishes) also removes the hidden
+   sidebar from the tab order and the accessibility tree. */
+#sidebar {
+  transition: transform 0.2s ease, visibility 0s linear 0s;
+}
 html.sidebar-hidden #sidebar {
   transform: translateX(-100%);
+  visibility: hidden;
+  transition: transform 0.2s ease, visibility 0s linear 0.2s;
 }
 html.sidebar-hidden #page {
   margin-left: 0;
@@ -274,12 +281,17 @@ html.sidebar-hidden #page {
 /* ---- Small screens: sidebar becomes an overlay ---- */
 
 @media (max-width: 999px) {
-  #sidebar {
+  #sidebar,
+  html.sidebar-hidden #sidebar {
     transform: translateX(-100%);
+    visibility: hidden;
     box-shadow: var(--shadow);
+    transition: transform 0.2s ease, visibility 0s linear 0.2s;
   }
   html.sidebar-open #sidebar {
     transform: none;
+    visibility: visible;
+    transition: transform 0.2s ease, visibility 0s linear 0s;
   }
   #page,
   html.sidebar-hidden #page {
@@ -306,7 +318,11 @@ html.sidebar-hidden #page {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  * {
+  *,
+  *::before,
+  *::after {
     transition: none !important;
+    animation: none !important;
+    scroll-behavior: auto !important;
   }
 }

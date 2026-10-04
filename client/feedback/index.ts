@@ -12,6 +12,8 @@ import md5 from "md5";
 import Highlighter from "web-highlighter";
 import type HighlightSource from "web-highlighter/dist/model/source";
 
+import { isObj, isStr } from "../../shared/guards";
+
 const STORAGE_KEY = "book-highlights";
 /** Never highlight inside these (interactive widgets, code). */
 const EXCLUDE = [".quiz", "pre", ".run-output", ".code-buttons", "button", "input", "textarea"];
@@ -24,13 +26,25 @@ interface Extra {
 
 type Stored = Pick<HighlightSource, "startMeta" | "endMeta" | "text" | "id"> & { extra: string };
 
+const isStored = (v: unknown): v is Stored =>
+  isObj(v) && isStr(v["id"]) && isStr(v["text"]) && isStr(v["extra"]) && isObj(v["startMeta"]) && isObj(v["endMeta"]);
+
+/** Saved highlights; anything malformed (edited by hand, older format) is ignored. */
 const readAll = (): Stored[] => {
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]") as Stored[];
+    const parsed: unknown = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]");
+    return Array.isArray(parsed) ? parsed.filter(isStored) : [];
   } catch {
     return [];
   }
 };
+
+/**
+ * Which page a highlight belongs to. Uses the page's own URL from the build
+ * (not location.pathname), so "/", "/index.html" and pretty URLs all match,
+ * and moving the site to another base path keeps highlights.
+ */
+const pageKey = () => document.documentElement.dataset.page ?? location.pathname;
 const writeAll = (items: Stored[]) => {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
@@ -40,7 +54,13 @@ const writeAll = (items: Stored[]) => {
 };
 const parseExtra = (extra: unknown): Extra => {
   try {
-    return { note: "", page: "", ...(JSON.parse(String(extra ?? "{}")) as Partial<Extra>) };
+    const parsed: unknown = typeof extra === "string" ? JSON.parse(extra) : {};
+    if (!isObj(parsed)) return { note: "", page: "" };
+    return {
+      note: isStr(parsed["note"]) ? parsed["note"] : "",
+      page: isStr(parsed["page"]) ? parsed["page"] : "",
+      ...(isStr(parsed["domHash"]) ? { domHash: parsed["domHash"] } : {}),
+    };
   } catch {
     return { note: "", page: "" };
   }
@@ -61,7 +81,7 @@ function init() {
   const keep: Stored[] = [];
   for (const h of all) {
     const extra = parseExtra(h.extra);
-    if (extra.page !== location.pathname) {
+    if (extra.page !== pageKey()) {
       keep.push(h);
       continue;
     }
@@ -135,7 +155,7 @@ function initSelectionButton(highlighter: Highlighter, content: HTMLElement) {
     const saved = range.cloneRange();
     pencil.hidden = true;
     askForNote(note => {
-      const page = location.pathname;
+      const page = pageKey();
       const dispose = highlighter.hooks.Serialize.RecordInfo.tap(() => JSON.stringify({ note, page }));
       highlighter.fromRange(saved);
       dispose();

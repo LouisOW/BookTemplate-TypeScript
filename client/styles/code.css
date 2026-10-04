@@ -80,6 +80,8 @@ pre[data-runnable] .code-buttons {
   background: var(--bg);
   font: 0.85rem/1.5 var(--mono);
   white-space: pre-wrap;
+  max-height: 24rem;
+  overflow: auto;
 }
 .run-output.running::before {
   content: "Running…";

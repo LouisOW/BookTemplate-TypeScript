@@ -3,6 +3,8 @@
 export interface QuizData {
   /** Stable name, used as the localStorage key. */
   name: string;
+  /** Hash of the questions; saved answers are only reused if it matches. */
+  version: string;
   fullscreen: boolean;
   cacheAnswers: boolean;
   questions: QuizQuestion[];

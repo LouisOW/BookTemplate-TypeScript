@@ -22,10 +22,11 @@ npm run dev        # http://localhost:3000, rebuilds and reloads on save
 |---|---|
 | `npm run dev` | Build, serve, and live-reload while you write |
 | `npm run build` | Build the static site into `book/` |
-| `npm test` | Unit and build tests (vitest) |
-| `npm run typecheck` | Type-check the engine, client and tests |
+| `npm test` | Unit, DOM and build tests (vitest + happy-dom) |
+| `npm run typecheck` | Type-check the engine (Node), client (browser) and tests separately |
+| `npm run check` | Everything CI runs: typecheck, tests, build, internal link check |
 
-Requires Node.js 20 or later.
+Requires Node.js 22 or later (see `.nvmrc`).
 
 ## License
 

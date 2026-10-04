@@ -1,17 +1,7 @@
 {
-  "compilerOptions": {
-    "strict": true,
-    "noUncheckedIndexedAccess": true,
-    "skipLibCheck": true,
-    "target": "ES2022",
-    "module": "ESNext",
-    "moduleResolution": "Bundler",
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
-    "types": ["node"],
-    "noEmit": true,
-    "esModuleInterop": true,
-    "resolveJsonModule": true,
-    "isolatedModules": true
-  },
-  "include": ["engine", "client", "shared", "plugins", "tests", "book.config.ts", "vitest.config.ts"]
+  // Editor + tests. `npm run typecheck` also checks engine/ and client/ separately
+  // (tsconfig.engine.json / tsconfig.client.json) so DOM and Node types can't leak across.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": { "lib": ["ES2022", "DOM", "DOM.Iterable"], "types": ["node"] },
+  "include": ["engine", "client", "shared", "plugins", "tests", "scripts", "book.config.ts", "vitest.config.ts"]
 }

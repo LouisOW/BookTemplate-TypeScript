@@ -2,7 +2,7 @@
 // Every word in the query must match; title and heading matches rank higher.
 
 import type { SearchDoc } from "../engine/search";
-import { modalOpen } from "./chrome";
+import { modalOpen, trapFocus } from "./chrome";
 
 const MAX_RESULTS = 30;
 
@@ -18,12 +18,17 @@ export function initSearch(root: string) {
   let loading: Promise<void> | null = null;
   const load = () =>
     (loading ??= fetch(`${root}assets/search-index.json`)
-      .then(r => r.json() as Promise<SearchDoc[]>)
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json() as Promise<unknown>;
+      })
       .then(docs => {
-        index = docs;
+        if (!Array.isArray(docs)) throw new Error("bad index");
+        index = docs as SearchDoc[];
       })
       .catch(() => {
         status.textContent = "Search index could not be loaded.";
+        loading = null; // try again next time the dialog opens
       }));
 
   const open = () => {
@@ -53,12 +58,15 @@ export function initSearch(root: string) {
 
   // Arrow keys move between the input and results.
   dialog.addEventListener("keydown", e => {
+    if (trapFocus(dialog, e)) return;
     const items = [input, ...results.querySelectorAll<HTMLAnchorElement>("a")];
     const i = items.indexOf(document.activeElement as HTMLAnchorElement);
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
       items[Math.max(0, Math.min(items.length - 1, i + (e.key === "ArrowDown" ? 1 : -1)))]?.focus();
     } else if (e.key === "Enter" && document.activeElement === input) {
+      clearTimeout(timer);
+      run(); // don't act on results from before the last keystroke
       results.querySelector("a")?.click();
     }
   });

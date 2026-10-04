@@ -1,4 +1,4 @@
-import { defineConfig } from "./engine/config";
+import { defineConfig } from "./engine";
 
 export default defineConfig({
   title: "Your Book Title",
@@ -6,6 +6,8 @@ export default defineConfig({
   description: "One-line description, used for search engines and link previews.",
   language: "en",
   // repositoryUrl: "https://github.com/you/your-book",
+  // URL path the site is served from, e.g. "/your-book/" for a GitHub project site.
+  // basePath: "/",
 
   // Interactive features. All on by default; set any to false to remove it.
   features: {

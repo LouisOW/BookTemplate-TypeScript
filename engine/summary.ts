@@ -1,9 +1,19 @@
+import path from "node:path";
+
 import { BookError, type Page } from "./config";
 
 export type TocItem =
   | { kind: "page"; title: string; path: string | null; number?: string; children: TocItem[] }
   | { kind: "part"; title: string }
   | { kind: "separator" };
+
+type PageItem = Extract<TocItem, { kind: "page" }>;
+
+/** "./a.md", "sub\\a.md" -> "a.md", "sub/a.md"; empty -> null (draft). */
+function normalisePath(raw: string): string | null {
+  const p = raw.trim().replace(/\\/g, "/");
+  return p ? path.posix.normalize(p) : null;
+}
 
 export interface Summary {
   title?: string;
@@ -29,9 +39,10 @@ const LIST_ITEM = /^(\s*)[-*]\s+(.*)$/;
 export function parseSummary(text: string, file = "SUMMARY.md"): Summary {
   const items: TocItem[] = [];
   let title: string | undefined;
-  // Stack of open list levels: indent width + the children array to push into.
-  let stack: { indent: number; children: TocItem[]; counter: number[] }[] = [];
-  const topCounter: number[] = [0];
+  // Open ancestors of the current list item. A page's number is derived from
+  // its parent, so inconsistent indentation can't produce duplicate numbers.
+  let stack: { indent: number; page: PageItem }[] = [];
+  let topCount = 0;
   let sawContent = false;
 
   const lines = text.split(/\r?\n/);
@@ -64,34 +75,23 @@ export function parseSummary(text: string, file = "SUMMARY.md"): Summary {
       const link = LINK.exec(listItem[2]!.trim());
       if (!link) throw new BookError(`line ${lineNo}: expected "- [Title](file.md)"`, file);
 
-      while (stack.length && stack[stack.length - 1]!.indent > indent) stack.pop();
-      let level = stack[stack.length - 1];
-      if (!level || indent > level.indent) {
-        // Going one level deeper: children go under the last page at the current level.
-        const parentList = level ? level.children : items;
-        const parent = [...parentList].reverse().find(it => it.kind === "page");
-        if (level && !parent) throw new BookError(`line ${lineNo}: nested item has no parent`, file);
-        const children = level && parent && parent.kind === "page" ? parent.children : items;
-        const counter = level && parent && parent.kind === "page" ? [...level.counter, 0] : topCounter;
-        level = { indent, children, counter };
-        stack.push(level);
+      while (stack.length && stack[stack.length - 1]!.indent >= indent) stack.pop();
+      const parent = stack[stack.length - 1]?.page;
+      const item: PageItem = { kind: "page", title: link[1]!, path: normalisePath(link[2]!), number: "", children: [] };
+      if (parent) {
+        item.number = `${parent.number}.${parent.children.length + 1}`;
+        parent.children.push(item);
+      } else {
+        item.number = String(++topCount);
+        items.push(item);
       }
-
-      level.counter[level.counter.length - 1]! += 1;
-      const number = level.counter.join(".");
-      level.children.push({
-        kind: "page",
-        title: link[1]!,
-        path: link[2]!.trim() || null,
-        number,
-        children: [],
-      });
+      stack.push({ indent, page: item });
       return;
     }
 
     const link = LINK.exec(line.trim());
     if (link) {
-      items.push({ kind: "page", title: link[1]!, path: link[2]!.trim() || null, children: [] });
+      items.push({ kind: "page", title: link[1]!, path: normalisePath(link[2]!), children: [] });
       stack = [];
       return;
     }
@@ -114,7 +114,7 @@ export function parseSummary(text: string, file = "SUMMARY.md"): Summary {
           title: item.title,
           path: item.path,
           url: item.path.replace(/\.md$/, ".html"),
-          number: item.number,
+          ...(item.number ? { number: item.number } : {}),
         });
       }
       walk(item.children);

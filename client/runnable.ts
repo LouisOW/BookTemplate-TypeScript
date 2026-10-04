@@ -6,6 +6,10 @@
 import { codeButtons } from "./chrome";
 
 const TIMEOUT_MS = 5000;
+const MAX_LINES = 500;
+
+/** Cancels the in-flight run for an output panel, so re-clicking Run restarts cleanly. */
+const activeRuns = new WeakMap<HTMLElement, () => void>();
 
 type RunMessage = { runId: string; level: "log" | "info" | "warn" | "error" | "done"; text: string };
 
@@ -66,6 +70,7 @@ export function initRunnable() {
 }
 
 function execute(js: string, output: HTMLElement) {
+  activeRuns.get(output)?.();
   output.hidden = false;
   output.replaceChildren();
   output.classList.add("running");
@@ -81,7 +86,14 @@ function execute(js: string, output: HTMLElement) {
     `<script type="module">setTimeout(() => parent.postMessage({ runId: ${JSON.stringify(runId)}, level: "done", text: "" }, "*"), 0);</script>`;
 
   let lines = 0;
+  let done = false;
+  let settle: ReturnType<typeof setTimeout> | undefined;
   const finish = (note?: string) => {
+    if (done) return;
+    done = true;
+    clearTimeout(timeout);
+    clearTimeout(settle);
+    activeRuns.delete(output);
     window.removeEventListener("message", onMessage);
     frame.remove();
     output.classList.remove("running");
@@ -89,29 +101,24 @@ function execute(js: string, output: HTMLElement) {
     else if (lines === 0) addLine(output, "note", "(no output)");
   };
   const timeout = setTimeout(() => finish(`(stopped after ${TIMEOUT_MS / 1000}s)`), TIMEOUT_MS);
-  let settle: ReturnType<typeof setTimeout> | undefined;
 
   const onMessage = (e: MessageEvent<RunMessage>) => {
     if (e.source !== frame.contentWindow || e.data?.runId !== runId) return;
     if (e.data.level === "done") {
       // Give pending timers/promises a moment, then stop.
-      settle = setTimeout(() => {
-        clearTimeout(timeout);
-        finish();
-      }, 300);
+      settle = setTimeout(() => finish(), 300);
       return;
     }
     lines++;
-    addLine(output, e.data.level, e.data.text);
+    if (lines <= MAX_LINES) addLine(output, e.data.level, e.data.text);
+    else if (lines === MAX_LINES + 1) addLine(output, "note", `(output truncated after ${MAX_LINES} lines)`);
     if (settle) {
       clearTimeout(settle);
-      settle = setTimeout(() => {
-        clearTimeout(timeout);
-        finish();
-      }, 300);
+      settle = setTimeout(() => finish(), 300);
     }
   };
   window.addEventListener("message", onMessage);
+  activeRuns.set(output, () => finish("(restarted)"));
   document.body.append(frame);
 }
 

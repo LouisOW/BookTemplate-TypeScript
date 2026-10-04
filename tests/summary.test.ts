@@ -38,6 +38,16 @@ describe("parseSummary", () => {
     expect(s.items.map(i => i.kind)).toEqual(["page", "part", "page", "separator", "page"]);
   });
 
+  it("numbers from the parent, so uneven indentation can't duplicate numbers", () => {
+    const s = parseSummary("- [A](a.md)\n    - [B](b.md)\n  - [C](c.md)\n- [D](d.md)\n");
+    expect(s.pages.map(p => p.number)).toEqual(["1", "1.1", "1.2", "2"]);
+  });
+
+  it("normalises paths and catches duplicates written differently", () => {
+    expect(parseSummary("- [A](sub\\a.md)").pages[0]!.url).toBe("sub/a.html");
+    expect(() => parseSummary("- [A](a.md)\n- [B](./a.md)")).toThrow(/listed twice/);
+  });
+
   it("reports bad lines, duplicates and non-Markdown files", () => {
     expect(() => parseSummary("- not a link")).toThrow(/line 1/);
     expect(() => parseSummary("- [A](a.md)\n- [B](a.md)")).toThrow(/listed twice/);

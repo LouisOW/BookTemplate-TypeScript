@@ -5,12 +5,15 @@
 // hook in analytics or progress tracking without editing this file.
 
 import { normaliseAnswer, type QuizData, type QuizQuestion } from "../shared/quiz";
-import { readStorage, writeStorage } from "./chrome";
+import { isObj, isStr } from "../shared/guards";
+import { readStorage, trapFocus, writeStorage } from "./chrome";
 
 /** A reader's response: indices into `options` (multiple choice) or text (short answer). */
 type Response = number[] | string;
 
 interface Saved {
+  /** QuizData.version the answers were given against. */
+  version: string;
   answers: Response[];
 }
 
@@ -46,8 +49,11 @@ class Quiz {
   private readonly key: string;
   private answers: Response[] = [];
   private order: number[][] = [];
+  /** Element focused before the quiz opened; focus returns there on close. */
+  private opener: HTMLElement | null = null;
   private onKey = (e: KeyboardEvent) => {
     if (e.key === "Escape") this.close();
+    else trapFocus(this.el, e);
   };
 
   constructor(
@@ -59,14 +65,27 @@ class Quiz {
     this.renderIntro();
   }
 
+  /** The saved attempt, if it matches the current version of the quiz and is well-formed. */
   private load(): Saved | null {
     if (!this.data.cacheAnswers) return null;
+    let saved: unknown;
     try {
-      const saved = JSON.parse(readStorage(this.key) ?? "null") as Saved | null;
-      return saved && Array.isArray(saved.answers) && saved.answers.length === this.data.questions.length ? saved : null;
+      saved = JSON.parse(readStorage(this.key) ?? "null");
     } catch {
       return null;
     }
+    if (!isObj(saved) || saved["version"] !== this.data.version || !Array.isArray(saved["answers"])) return null;
+    const answers: unknown[] = saved["answers"];
+    const qs = this.data.questions;
+    const ok =
+      answers.length === qs.length &&
+      qs.every((q, i) => {
+        const r = answers[i];
+        return q.type === "ShortAnswer"
+          ? isStr(r)
+          : Array.isArray(r) && r.every(j => Number.isInteger(j) && j >= 0 && j < q.options.length);
+      });
+    return ok ? { version: this.data.version, answers: answers as Response[] } : null;
   }
 
   private score(answers: Response[]): number {
@@ -102,6 +121,7 @@ class Quiz {
   }
 
   private open(render: () => void) {
+    if (!this.el.classList.contains("quiz-active")) this.opener = document.activeElement as HTMLElement | null;
     this.el.classList.add("quiz-active");
     if (this.data.fullscreen) {
       this.el.classList.add("quiz-fullscreen");
@@ -120,7 +140,9 @@ class Quiz {
     document.documentElement.classList.remove("quiz-open");
     document.removeEventListener("keydown", this.onKey);
     this.renderIntro();
-    this.el.querySelector("button")?.focus();
+    // The opener was replaced by re-rendering the intro, so fall back to its first button.
+    (this.opener?.isConnected ? this.opener : this.el.querySelector("button"))?.focus();
+    this.opener = null;
   }
 
   private start() {
@@ -192,7 +214,7 @@ class Quiz {
   }
 
   private finish() {
-    if (this.data.cacheAnswers) writeStorage(this.key, JSON.stringify({ answers: this.answers } satisfies Saved));
+    if (this.data.cacheAnswers) writeStorage(this.key, JSON.stringify({ version: this.data.version, answers: this.answers } satisfies Saved));
     const score = this.score(this.answers);
     const total = this.data.questions.length;
     window.dispatchEvent(new CustomEvent("book:quiz-complete", { detail: { name: this.data.name, score, total } }));
@@ -200,6 +222,7 @@ class Quiz {
     const body = div("quiz-body", "");
     const result = document.createElement("p");
     result.className = "quiz-score";
+    result.setAttribute("role", "status");
     result.textContent = score === total ? `You answered all ${total} questions correctly! 🎉` : `You answered ${score} of ${total} questions correctly.`;
     const answers = this.answers;
     body.append(

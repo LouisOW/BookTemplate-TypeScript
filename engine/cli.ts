@@ -8,12 +8,16 @@ import { BookError, resolveConfig, type BookConfig, type ResolvedConfig } from "
 
 const USAGE = `Usage:
   npm run build              build the book into ./book
-  npm run dev [-- --port N]  build, serve on http://localhost:3000 and rebuild on change`;
+  npm run dev [-- --port N] [--host H]
+                             build, serve on http://localhost:3000 and rebuild on change`;
 
 async function loadConfig(root: string): Promise<ResolvedConfig> {
   const file = path.join(root, "book.config.ts");
   if (!fs.existsSync(file)) throw new BookError("missing book.config.ts");
-  const mod = (await import(pathToFileURL(file).href)) as { default: BookConfig };
+  const mod = (await import(pathToFileURL(file).href)) as { default?: BookConfig };
+  if (!mod.default || typeof mod.default.title !== "string") {
+    throw new BookError("book.config.ts must `export default defineConfig({ title: ... })`");
+  }
   return resolveConfig(mod.default, root);
 }
 
@@ -43,50 +47,90 @@ const MIME: Record<string, string> = {
   ".ico": "image/x-icon",
 };
 
-async function runDev(root: string, port: number) {
+async function runDev(root: string, port: number, host: string) {
   const config = await loadConfig(root);
   const outDir = path.resolve(root, config.out);
   const clients = new Set<http.ServerResponse>();
 
-  const rebuild = async () => {
-    try {
-      const { pages, ms } = await build(config, { dev: true, log: m => console.log(m) });
-      console.log(`Rebuilt ${pages} pages in ${ms} ms`);
-      for (const c of clients) c.write("data: reload\n\n");
-    } catch (e) {
-      report(e);
+  // One build at a time; changes made during a build trigger exactly one more.
+  let running: Promise<void> | null = null;
+  let pending = false;
+  const rebuild = async (): Promise<void> => {
+    if (running) {
+      pending = true;
+      return running;
+    }
+    running = (async () => {
+      try {
+        const { pages, ms } = await build(config, { dev: true, log: m => console.log(m) });
+        console.log(`Rebuilt ${pages} pages in ${ms} ms`);
+        for (const c of clients) c.write("data: reload\n\n");
+      } catch (e) {
+        report(e);
+      }
+    })();
+    await running;
+    running = null;
+    if (pending) {
+      pending = false;
+      await rebuild();
     }
   };
   await rebuild();
 
-  http
-    .createServer((req, res) => {
-      const url = decodeURIComponent((req.url ?? "/").split("?")[0]!);
-      if (url === "/__livereload") {
-        res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
-        res.write(": connected\n\n");
-        clients.add(res);
-        req.on("close", () => clients.delete(res));
-        return;
-      }
-      let file = path.join(outDir, path.normalize(url).replace(/^(\.\.[/\\])+/, ""));
-      if (fs.existsSync(file) && fs.statSync(file).isDirectory()) file = path.join(file, "index.html");
-      if (!file.startsWith(outDir) || !fs.existsSync(file)) {
-        res.writeHead(404, { "Content-Type": MIME[".html"] });
-        res.end(fs.existsSync(path.join(outDir, "404.html")) ? fs.readFileSync(path.join(outDir, "404.html")) : "Not found");
-        return;
-      }
-      res.writeHead(200, { "Content-Type": MIME[path.extname(file)] ?? "application/octet-stream", "Cache-Control": "no-store" });
-      fs.createReadStream(file).pipe(res);
-    })
-    .listen(port, () => console.log(`Serving on http://localhost:${port}  (Ctrl+C to stop)`));
+  const notFound = (res: http.ServerResponse) => {
+    const page = path.join(outDir, "404.html");
+    res.writeHead(404, { "Content-Type": MIME[".html"] });
+    res.end(fs.existsSync(page) ? fs.readFileSync(page) : "Not found");
+  };
+
+  const server = http.createServer((req, res) => {
+    let url: string;
+    try {
+      url = decodeURIComponent((req.url ?? "/").split("?")[0]!);
+    } catch {
+      res.writeHead(400).end("Bad request");
+      return;
+    }
+    if (url === "/__livereload") {
+      res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
+      res.write(": connected\n\n");
+      clients.add(res);
+      req.on("close", () => clients.delete(res));
+      return;
+    }
+
+    // Resolve inside outDir only; "." + url keeps a leading "/" from escaping it.
+    let file = path.resolve(outDir, "." + url);
+    if (file !== outDir && !file.startsWith(outDir + path.sep)) return notFound(res);
+    try {
+      if (fs.statSync(file).isDirectory()) file = path.join(file, "index.html");
+      if (!fs.statSync(file).isFile()) return notFound(res);
+    } catch {
+      return notFound(res); // missing, or removed by a rebuild in progress
+    }
+    res.writeHead(200, { "Content-Type": MIME[path.extname(file)] ?? "application/octet-stream", "Cache-Control": "no-store" });
+    fs.createReadStream(file)
+      .on("error", () => res.destroy())
+      .pipe(res);
+  });
+  server.on("error", (e: NodeJS.ErrnoException) => {
+    console.error(
+      e.code === "EADDRINUSE"
+        ? `\x1b[31merror\x1b[0m port ${port} is already in use. Try \`npm run dev -- --port ${port + 1}\``
+        : `\x1b[31merror\x1b[0m ${e.message}`
+    );
+    process.exit(1);
+  });
+  // Localhost only: drafts shouldn't be reachable from the network. Use --host to override.
+  server.listen(port, host, () => console.log(`Serving on http://${host === "127.0.0.1" ? "localhost" : host}:${port}  (Ctrl+C to stop)`));
 
   let timer: NodeJS.Timeout | undefined;
   const watch = (dir: string) => {
     if (!fs.existsSync(dir)) return;
     fs.watch(dir, { recursive: true }, () => {
       clearTimeout(timer);
-      timer = setTimeout(rebuild, 100);
+      timer = setTimeout(() => void rebuild(), 100);
     });
   };
   for (const dir of [config.src, "quizzes", "client", "shared", "theme"]) watch(path.resolve(root, dir));
@@ -99,10 +143,18 @@ async function runDev(root: string, port: number) {
 }
 
 const [command, ...rest] = process.argv.slice(2);
-const portFlag = rest.indexOf("--port");
-const port = portFlag >= 0 ? Number(rest[portFlag + 1]) : 3000;
+const flag = (name: string) => {
+  const i = rest.indexOf(name);
+  return i >= 0 ? rest[i + 1] : undefined;
+};
+const port = Number(flag("--port") ?? 3000);
+const host = flag("--host") ?? "127.0.0.1";
+if (!Number.isInteger(port) || port < 0 || port > 65535) {
+  console.error(`\x1b[31merror\x1b[0m --port must be a number from 0 to 65535`);
+  process.exit(1);
+}
 
-const run = command === "build" ? runBuild(process.cwd()) : command === "dev" ? runDev(process.cwd(), port) : null;
+const run = command === "build" ? runBuild(process.cwd()) : command === "dev" ? runDev(process.cwd(), port, host) : null;
 if (!run) {
   console.log(USAGE);
   process.exit(command ? 1 : 0);

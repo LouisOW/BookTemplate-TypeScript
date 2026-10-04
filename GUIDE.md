@@ -60,7 +60,7 @@ There are two places to add behaviour, as in mdBook:
 
 ## 2. Install
 
-You need **Node.js 20 or later**.
+You need **Node.js 22 or later** (`.nvmrc` pins 22).
 
 ```bash
 npm install
@@ -90,7 +90,8 @@ web-highlighter, vitest) is an npm dependency.
 ├── engine/                   # The build (Node)
 │   ├── cli.ts                # `npm run build` / `npm run dev` (static server + live reload)
 │   ├── build.ts              # Orchestrates a build
-│   ├── config.ts             # Config + Plugin types (the public API)
+│   ├── index.ts              # Public API: defineConfig, definePlugin, types, helpers
+│   ├── config.ts             # Config + Plugin types
 │   ├── summary.ts            # SUMMARY.md parser
 │   ├── markdown.ts           # markdown-it setup: code blocks, heading ids, .md→.html links
 │   ├── layout.ts             # Page HTML: sidebar, top bar, search box, prev/next
@@ -102,7 +103,8 @@ web-highlighter, vitest) is an npm dependency.
 │   ├── search.ts, quiz.ts, badges.ts, runnable.ts
 │   ├── feedback/             # Highlights + notes (separate bundle)
 │   └── styles/               # CSS. theme.css holds every color variable
-├── shared/quiz.ts            # Quiz data types used by both engine and client
+├── shared/                   # Quiz data types + runtime type guards, used by engine and client
+├── scripts/check-links.ts    # Internal link checker for the built book
 ├── theme/                    # Badge icons, favicon
 └── tests/                    # vitest: parser, plugins, client logic, full builds
 ```
@@ -150,7 +152,13 @@ the build creates it containing just a heading.
   run but hidden from readers.
 - `{{#include ../code/file.ts}}` pulls in a file. Add `:5:10` for lines 5–10,
   `:5` for line 5 to the end, or `::10` for the first 10 lines. Paths are
-  relative to the page.
+  relative to the page, and can contain spaces. Included files can include
+  other files (paths relative to themselves, up to 10 levels deep).
+- To show a directive literally (for example in a page that documents this
+  syntax), write `\{{#include …}}` or `\{{#quiz …}}`. The backslash is removed
+  from the output. `{{#quiz}}` and `<Listing>` inside code (fences or inline
+  backticks) are also left alone automatically. `{{#include}}` still works
+  inside fences, since that's its main use.
 - Images: `![alt](img/file.svg)` or `<img src="img/file.svg" class="center" width="300">`.
 
 ### 4.3 Renaming pages without breaking links
@@ -223,6 +231,9 @@ Explanation in **Markdown**, shown when the reader reviews answers.
 - **Validation:** the build fails with the file and question number if a quiz
   has a missing field, a wrong type, an id used twice anywhere in the book, or
   an unknown multipart key.
+- **Saved answers and edits:** each quiz is embedded with a hash of its
+  questions. If you change a question or its options, readers' saved answers
+  for that quiz are discarded instead of being matched to the wrong options.
 
 **Hook:** when a reader finishes a quiz, the client fires `book:quiz-complete`
 on `window` with `{ name, score, total }`. Listen for it to add analytics or
@@ -356,8 +367,9 @@ included when `features.highlights` is true.
 
 - [web-highlighter](https://github.com/alienzhou/web-highlighter) turns
   selections into serialisable positions, relative to `#content`.
-- Highlights are saved in `localStorage["book-highlights"]` with the page path,
-  so each page restores only its own.
+- Highlights are saved in `localStorage["book-highlights"]` with the page's
+  own URL from the build (`<html data-page>`), so each page restores only its
+  own. `/`, `/index.html` and pretty URLs all count as the same page.
 - **Highlights on text you've edited:** each highlight stores an MD5 hash of
   its paragraph. If you edit that paragraph, the highlight is dropped on the
   next load, so it never lands on the wrong text.
@@ -424,7 +436,7 @@ Style it in a new `client/styles/solution.css` and `@import` that file from
 Use this for new authoring syntax, or for work done once at build time.
 
 ```ts
-import type { Plugin } from "./engine/config";
+import { definePlugin, type Plugin } from "./engine"; // public API: engine/index.ts
 
 interface Plugin {
   name: string;
@@ -440,9 +452,9 @@ Example: a `{{#youtube VIDEO_ID}}` directive.
 
 ```ts
 // plugins/youtube.ts
-import type { Plugin } from "../engine/config";
+import { definePlugin } from "../engine";
 
-export const youtube: Plugin = {
+export const youtube = definePlugin({
   name: "youtube",
   preprocess: source =>
     source.replace(
@@ -451,7 +463,7 @@ export const youtube: Plugin = {
         `<div class="video"><iframe src="https://www.youtube-nocookie.com/embed/${id}" ` +
         `title="Video" allowfullscreen loading="lazy"></iframe></div>`
     ),
-};
+});
 ```
 
 ```ts
@@ -467,6 +479,11 @@ export default defineConfig({ /* … */ plugins: [youtube] });
   code fences, headings). `notes.ts` rewrites tokens and `runnable.ts` wraps
   the fence renderer.
 - `postprocess` for changes to the final HTML.
+
+Use `outsideCode(source, text => …)` from `engine` in `preprocess` when your
+directive shouldn't run inside code fences or backticks, like `quiz.ts` and
+`listing.ts` do. Put new plugins in `plugins/`, which is type-checked with
+the engine.
 
 **Pattern B + A together (how quizzes work):** the plugin turns the directive
 into `<div class="quiz"><script type="application/json">…data…</script></div>`,
@@ -487,12 +504,15 @@ bundles `.tsx` with no extra configuration.
 ## 12. Build, preview, test, deploy
 
 ```bash
-npm run dev          # build + serve on :3000 + rebuild/reload on save
-npm run dev -- --port 4000
+npm run dev          # build + serve on http://localhost:3000 + rebuild/reload on save
+npm run dev -- --port 4000 --host 0.0.0.0   # other port; reachable from your network
 npm run build        # production build (minified) into ./book
-npm test             # vitest
-npm run typecheck    # tsc
+npm test             # vitest (unit, DOM via happy-dom, full builds)
+npm run typecheck    # tsc, run separately for engine/ (Node), client/ (browser), tests
+npm run check        # all of the above + internal link check of book/
 ```
+
+- The dev server listens on localhost only by default. Pass `--host` to share drafts on your network.
 
 - The dev server watches `src/`, `quizzes/`, `client/`, `shared/` and
   `theme/`. If you change `engine/` or `book.config.ts`, restart it (it prints
@@ -500,12 +520,21 @@ npm run typecheck    # tsc
 - If a build fails in dev mode, the error is printed and the last good output
   stays up.
 - The tests (`tests/`) cover the SUMMARY parser, every plugin, quiz
-  validation, the client's answer checking and search ranking, and full builds.
+  validation, the quiz UI in a simulated DOM, search ranking, and full builds.
   Add tests when you add plugins.
+- `scripts/check-links.ts` checks every internal link, anchor and asset in
+  `book/`.
+- **Linting:** there's no ESLint setup yet. typescript-eslint's type-aware
+  rules need the TypeScript compiler API, which TypeScript 7 (used here)
+  doesn't ship yet. Add ESLint once typescript-eslint supports TS 7, or
+  install `typescript@6` alongside it just for linting.
 
-**Deploy:** `.github/workflows/main.yml` type-checks, tests and builds on
-every push, and publishes `book/` to GitHub Pages from `main`. Set
-Settings → Pages → Source to the `gh-pages` branch. The output is plain static
+**Deploy:** `.github/workflows/main.yml` runs `npm run check` on Node 22 and
+24 for every pull request and push to `main`, with read-only permissions. A
+separate deploy job (the only one allowed to write) publishes `book/` to
+GitHub Pages from `main`. Set Settings → Pages → Source to the `gh-pages`
+branch. For a project site served under `/<repo>/`, set
+`basePath: "/<repo>/"` in `book.config.ts` so `404.html` works at any URL. The output is plain static
 files, so Netlify, Cloudflare Pages, S3 or any web server also works.
 
 ---
@@ -535,7 +564,7 @@ moves across unchanged.
 
 ## 14. Checklist for a new book
 
-- [ ] `book.config.ts`: set `title`, `authors`, `description`, `repositoryUrl`
+- [ ] `book.config.ts`: set `title`, `authors`, `description`, `repositoryUrl`, and `basePath` if hosted under a sub-path
 - [ ] Turn off any features you don't want (`features: { … }`)
 - [ ] `src/SUMMARY.md`: lay out your chapters
 - [ ] `src/how-to-use.md`: explain the interactive features to readers

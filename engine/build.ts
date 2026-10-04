@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import * as esbuild from "esbuild";
 
-import { BookError, type Page, type Plugin, type PluginContext, type ResolvedConfig } from "./config";
+import { BookError, errorMessage, type Plugin, type PluginContext, type ResolvedConfig } from "./config";
 import { renderLayout, renderRedirect } from "./layout";
 import { createMarkdown, newEnv } from "./markdown";
 import { includePlugin } from "./plugins/include";
@@ -14,6 +14,7 @@ import { quizPlugin } from "./plugins/quiz";
 import { runnablePlugin } from "./plugins/runnable";
 import { indexPage, type SearchDoc } from "./search";
 import { parseSummary } from "./summary";
+import { unescapeDirectives } from "./text";
 
 /** Directory of the template's own files (client/, theme/), independent of the book's root. */
 const TEMPLATE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -38,6 +39,15 @@ export async function build(config: ResolvedConfig, opts: BuildOptions = {}): Pr
   const log = opts.log ?? (() => {});
   const srcDir = path.resolve(config.root, config.src);
   const outDir = path.resolve(config.root, config.out);
+
+  if (outDir === srcDir || isInside(outDir, srcDir)) {
+    throw new BookError(`out ("${config.out}") must not be inside src ("${config.src}")`, "book.config.ts");
+  }
+  for (const extra of [...config.extraCss, ...config.extraJs]) {
+    if (path.isAbsolute(extra) || path.normalize(extra).startsWith("..")) {
+      throw new BookError(`extraCss/extraJs paths must be inside the project: "${extra}"`, "book.config.ts");
+    }
+  }
 
   const summaryFile = path.join(srcDir, "SUMMARY.md");
   if (!fs.existsSync(summaryFile)) throw new BookError(`missing ${path.relative(config.root, summaryFile)}`);
@@ -68,13 +78,14 @@ export async function build(config: ResolvedConfig, opts: BuildOptions = {}): Pr
     let source = fs.readFileSync(file, "utf8");
     try {
       for (const p of plugins) if (p.preprocess) source = await p.preprocess(source, ctx);
+      source = unescapeDirectives(source);
       let html = md.render(source, newEnv(path.join(config.src, page.path)));
       for (const p of plugins) if (p.postprocess) html = await p.postprocess(html, ctx);
       rendered.set(page.url, html);
       if (config.features.search) searchDocs.push(...indexPage(page, html));
     } catch (e) {
       if (e instanceof BookError) throw e;
-      throw new BookError(`${(e as Error).message}`, path.join(config.src, page.path));
+      throw new BookError(errorMessage(e), path.join(config.src, page.path), { cause: e });
     }
   }
 
@@ -111,16 +122,19 @@ export async function build(config: ResolvedConfig, opts: BuildOptions = {}): Pr
       config,
       toc: summary.items,
       title: "Page not found",
-      content: `<h1>Page not found</h1><p>Try the <a href="index.html">first page</a> or the search.</p>`,
-      root: "",
-      next: summary.pages[0] as Page,
+      content: `<h1>Page not found</h1><p>Try the <a href="${config.basePath}index.html">first page</a> or the search.</p>`,
+      // 404.html is served at whatever URL was missing, so links must be absolute.
+      root: config.basePath,
+      next: summary.pages[0],
       dev: !!opts.dev,
     })
   );
 
-  for (const [from, to] of Object.entries(config.redirects)) {
+  for (const [rawFrom, rawTo] of Object.entries(config.redirects)) {
+    const from = rawFrom.replace(/^\/+/, "");
+    const to = rawTo.replace(/^\/+/, "");
     const depth = from.split("/").length - 1;
-    write(outDir, from, renderRedirect("../".repeat(depth) + to));
+    write(outDir, from, renderRedirect(/^[a-z]+:/i.test(rawTo) ? rawTo : "../".repeat(depth) + to));
   }
 
   if (config.features.search) write(outDir, "assets/search-index.json", JSON.stringify(searchDocs));
@@ -168,13 +182,22 @@ async function buildAssets(config: ResolvedConfig, outDir: string, dev: boolean)
   if (fs.existsSync(badges)) fs.cpSync(badges, path.join(assets, "badges"), { recursive: true });
 }
 
-/** Copies images and other non-Markdown files from src/ to the output. */
+/** Copies images and other non-Markdown files from src/ to the output, skipping dotfiles (.DS_Store, .git, …). */
 function copyStatic(srcDir: string, outDir: string) {
   fs.cpSync(srcDir, outDir, {
     recursive: true,
-    filter: src => fs.statSync(src).isDirectory() || !src.endsWith(".md"),
+    filter: src => {
+      if (src === srcDir) return true;
+      if (path.basename(src).startsWith(".") || path.basename(src) === "node_modules") return false;
+      return fs.statSync(src).isDirectory() || !src.endsWith(".md");
+    },
   });
 }
+
+const isInside = (child: string, parent: string) => {
+  const rel = path.relative(parent, child);
+  return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+};
 
 function write(outDir: string, rel: string, data: string | Buffer) {
   const file = path.join(outDir, rel);
